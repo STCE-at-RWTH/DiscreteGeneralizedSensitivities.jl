@@ -1,6 +1,6 @@
 name = "DiscreteGeneralizedSensitivities"
 uuid = "eb9eecac-26dc-45b7-83f2-1d878d2a5a88"
-authors = ["Sasha Fleming <alexander.fleming@rwth-aachen.de> and contributors"]
+authors = ["Sasha Fleming <fleming@stce.rwth-aachen.de> and contributors"]
 version = "1.0.0-DEV"
 
 [compat]
