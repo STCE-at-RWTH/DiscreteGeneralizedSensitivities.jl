@@ -1,5 +1,11 @@
 module DiscreteGeneralizedSensitivities
 
+@doc let
+    path = joinpath(dirname(@__DIR__), "README.md")
+    include_dependency(path)
+    read(path, String)
+end DiscreteGeneralizedSensitivities
+
 using Base: Fix1, Fix2, Fix
 
 using DifferentiationInterface
@@ -9,11 +15,11 @@ using Interpolations: Interpolations, scale, interpolate, BSpline
 export DiscreteSensitivityProblemCfg, DiscreteSensitivityBurgers
 export get_initial_conditions
 export cfl_safety_factor, cs_scaling_factor, cr_scaling_factor, alpha
-export nonlinear_f, nonlinear_df, u_exact, u_broad
+export nonlinear_f, nonlinear_df, u_exact, u_broad, u_gen
 export ξ, dξ_dp, jump_size
 
 export GTVClosure
-export solve_pde!, compute_Cr, compute_Cs, compute_Ct
+export solve_pde!, solve_pde_and_estimate_Cr!, compute_Cr, compute_Cs, compute_Ct
 
 const fdiff_backend = AutoForwardDiff()
 
@@ -49,9 +55,31 @@ end
 
 abstract type DiscreteSensitivityProblemCfg{T} end
 
+"""
+    cfl_safety_factor(::DiscreteSensitivityProblemCfg)
+
+Get the additional CFL safety factor for this problem configuration. Setting this closer to zero increases numerical dissipation.
+"""
 cfl_safety_factor(::DiscreteSensitivityProblemCfg{T}) where {T} = one(T)
+
+"""
+    cs_scaling_factor(::DiscreteSensitivityProblemCfg)
+
+Get the additional scaling factor for ``C_s``, chosen to satisfy Assumption 8 in [Hüser's dissertation](https://doi.org/10.18154/RWTH-2022-06229).
+"""
 cs_scaling_factor(::DiscreteSensitivityProblemCfg{T}) where {T} = convert(T, 2)
+"""
+    cr_scaling_factor(::DiscreteSensitivityProblemCfg)
+
+Get the additional scaling factor on ``C_r``, chosen to satisfy Assumptions 8, 9, 10 in [Hüser's dissertation](https://doi.org/10.18154/RWTH-2022-06229).
+"""
 cr_scaling_factor(::DiscreteSensitivityProblemCfg{T}) where {T} = one(T)
+
+@doc raw"""
+    alpha(::DiscreteSensitivityProblemCfg)
+
+Get the value of alpha chosen so that ``\Xi + \Delta x^\alpha`` escapes the shock region.
+"""
 alpha(::DiscreteSensitivityProblemCfg{T}) where {T} = convert(T, 0.5)
 
 f_burg(u) = u^2 / 2
@@ -72,6 +100,14 @@ function du_ramp_dp(t, x, p)
     return X(x, 0, ξ_ramp(t, p)) * derivative(u_fixed, fdiff_backend, p)
 end
 
+"""
+    DiscreteSensitivityBurgers
+
+Configuration for computing discrete sensitivities to solutions to Burgers equation.
+Equipped with the ramp intial condition and corresponding exact solution.
+
+Allows setting the CFL safety factor as well as scaling on ``C_s`` and ``C_r``.
+"""
 struct DiscreteSensitivityBurgers <: DiscreteSensitivityProblemCfg{Float64}
     CFL_SAFETY::Float64
     CS_FACTOR::Float64
@@ -84,19 +120,88 @@ cs_scaling_factor(cfg::DiscreteSensitivityBurgers) = cfg.CS_FACTOR
 cr_scaling_factor(cfg::DiscreteSensitivityBurgers) = cfg.CR_FACTOR
 alpha(cfg::DiscreteSensitivityBurgers) = cfg.ALPHA
 
+"""
+    nonlinear_f(::DiscreteSensitivityProblemCfg)
+
+Get the flux function ``f(u)`` for the PDE.
+"""
 nonlinear_f(::DiscreteSensitivityBurgers) = f_burg
+
+"""
+    nonlinear_df(::DiscreteSensitivityProblemCfg)
+
+Get the derivative of the nonlinear flux function ``f'(u)`` for the PDE.
+"""
 nonlinear_df(::DiscreteSensitivityBurgers) = df_burg
 
+"""
+    u0(::DiscreteSensitivityProblemCfg)
+
+Get the initial conditions ``u(0, x, p)``.
+"""
 u0(::DiscreteSensitivityBurgers) = u0_ramp
+
+"""
+    u_exact(::DiscreteSensitivityProblemCfg)
+
+Get the exact solution ``u(t, x, p)``.
+"""
 u_exact(::DiscreteSensitivityBurgers) = u_ramp
+
+"""
+    u_broad(::DiscreteSensitivityProblemCfg)
+
+Get the analytic broad tangent ``u^{(1)}(t, x, p)``.
+"""
 u_broad(::DiscreteSensitivityBurgers) = du_ramp_dp
 
+@doc raw"""
+    ξ(::DiscreteSensitivityProblemCfg)
+
+Get the position(s) ``\xi(t, p)`` of any discontinuities in the exact solution.
+"""
 ξ(::DiscreteSensitivityBurgers) = ξ_ramp
+
+"""
+    dξ_dp(::DiscreteSensitivityProblemCfg)
+
+Get the sensitivity of the shock positions to the parameters.
+"""
 dξ_dp(::DiscreteSensitivityBurgers) = dξ_ramp_dp
 
+"""
+    jump_size(::DiscreteSensitivityProblemCfg)
+
+Get the size(s) of the discontinuities in the exact solution.
+"""
 jump_size(::DiscreteSensitivityBurgers) = Δu_ramp
 
-function get_initial_conditions(xs, p, pdot, cfg::DiscreteSensitivityBurgers)
+"""
+    u_gen(cfg::::DiscreteSensitivityProblemCfg)
+
+The analytic generalized tangent of the exact solution. See Section 5 in [Hüser's dissertation](https://doi.org/10.18154/RWTH-2022-06229).
+"""
+function u_gen(cfg)
+    return (t, x, p, pdot) -> let cfg = cfg
+        res = u_broad(cfg)(t, x, p) * pdot
+        Δ = jump_size(cfg)(t, p)
+        ξk = ξ(cfg)(t, p)
+        ξkdot = dξ_dp(cfg)(t, p) * pdot
+        if ξkdot > 0
+            res += X(x, ξk, ξk + ξkdot) * Δ
+        elseif ξkdot < 0
+            res -= X(x, ξk + ξkdot, ξk) * Δ
+        end
+        return res
+    end
+end
+
+@doc raw"""
+    get_initial_conditions(xs, p, pdot, cfg)
+
+Get the initial conditions ``(U, U_^{(1)}{broad}, \Xi, \Xi^{(1)})`` given ``(x_j, p, p^{(1)})``.
+"""
+function get_initial_conditions(xs, p, pdot, cfg)
     U = map(Fix2(u0(cfg), p), xs)
     Udot = map(xs) do x
         first(pushforward(Fix1(u0(cfg), x), fdiff_backend, p, (pdot,)))
@@ -109,22 +214,30 @@ end
 struct GTVClosure{T,XT}
     xs::XT
     cr_dx_alpha::T
-    udot::Vector{T}
-    Δu::T
+    U::Vector{T}
+    Udot::Vector{T}
     Ξ::T
     Ξdot::T
 end
 
-function (gtv::GTVClosure{T,XT})(x, pdot) where {T,XT}
-    shock_cut = (gtv.Ξ - gtv.cr_dx_alpha, gtv.Ξ + gtv.cr_dx_alpha)
-    udot_broad = piecewise_constant_interp(gtv.udot, gtv.xs)(x) * !X(x, shock_cut)
-    Ξ_shift = gtv.Ξdot * pdot
+function (gtv::GTVClosure{T,XT})(x) where {T,XT}
+    # edges of shock region
+    ΞL = gtv.Ξ - gtv.cr_dx_alpha
+    ΞR = gtv.Ξ + gtv.cr_dx_alpha
+    # discrete jump height
+    U_disc = piecewise_constant_interp(gtv.U, gtv.xs)
+    ΔU = U_disc(ΞL) - U_disc(ΞR)
+    # evaluate the broad tangent with the shock cut
+    U_broad = piecewise_constant_interp(gtv.Udot, gtv.xs)(x) * !X(x, ΞL, ΞR)
+    # evaluate the shock shift itself
+    Ξ_shift = gtv.Ξdot
     shock_shift = if Ξ_shift > 0
-        gtv.Δu * X(x, gtv.Ξ, gtv.Ξ + Ξ_shift)
+        ΔU * X(x, gtv.Ξ, gtv.Ξ + Ξ_shift)
     else
-        -gtv.Δu * X(x, gtv.Ξ + Ξ_shift, gtv.Ξ)
+        -ΔU * X(x, gtv.Ξ + Ξ_shift, gtv.Ξ)
     end
-    return udot_broad + shock_shift
+    # return the value of the GTV
+    return U_broad + shock_shift
 end
 
 function compute_Ct(U, cfg)
@@ -222,6 +335,37 @@ function solve_pde!(U, xs::AbstractRange, T_end, cfg; recompute_dt = false)
         U .= U_temp
     end
     return U
+end
+
+function solve_pde_and_estimate_Cr!(
+    U,
+    xs::AbstractRange,
+    T_end,
+    p,
+    Cr_0,
+    cfg;
+    recompute_dt = false,
+)
+    dx = step(xs)
+    dt = compute_Ct(U, cfg) * dx
+    Cr = Cr_0
+    t = zero(T_end)
+    U_temp = similar(U)
+    stepping = true
+    while stepping
+        if recompute_dt
+            dt = compute_Ct(U, cfg) * dx
+        end
+        if t + dt ≥ T_end
+            dt = T_end - t
+            stepping = false
+        end
+        step_lax_friedrichs!(U_temp, U, dt, xs, cfg)
+        t += dt
+        U .= U_temp
+        Cr = max(Cr, compute_Cr(U, t, xs, p, cfg))
+    end
+    return (U, Cr)
 end
 
 function solve_pde!(U, Udot, xs::AbstractRange, T_end, cfg; recompute_dt = false)
