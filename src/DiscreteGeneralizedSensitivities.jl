@@ -10,7 +10,6 @@ using Base: Fix1, Fix2, Fix
 
 using DifferentiationInterface
 using ForwardDiff: ForwardDiff
-using Interpolations: Interpolations, scale, interpolate, BSpline
 
 export DiscreteSensitivityProblemCfg, DiscreteSensitivityBurgers
 export get_initial_conditions
