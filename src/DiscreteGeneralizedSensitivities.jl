@@ -280,12 +280,8 @@ function _step_lax_friedrichs_threaded_impl!(U_next, U, Δt, xs::AbstractRange, 
     return nothing
 end
 
-function step_lax_friedrichs!(U_next, U, Δt, xs, cfg; threading_thold = 10_000)
-    if length(xs) > threading_thold
-        return _step_lax_friedrichs_serial_impl!(U_next, U, Δt, xs, cfg)
-    else
-        return _step_lax_friedrichs_threaded_impl!(U_next, U, Δt, xs, cfg)
-    end
+function step_lax_friedrichs!(U_next, U, Δt, xs, cfg)
+    return _step_lax_friedrichs_serial_impl!(U_next, U, Δt, xs, cfg)
 end
 
 function next_shock_location(Ξ, U, xs, Δt, cfg)
