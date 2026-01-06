@@ -263,7 +263,7 @@ function fdiff_eps(arg::T) where {T<:Real}
     return h
 end
 
-function step_lax_friedrichs!(U_next, U, Δt, xs::AbstractRange, cfg)
+function _step_lax_friedrichs_serial_impl!(U_next, U, Δt, xs::AbstractRange, cfg)
     f = nonlinear_f(cfg)
     @views map!(U_next[begin+1:end-1], U[begin:end-2], U[begin+2:end]) do U_L, U_R
         return (U_L + U_R) / 2 + Δt / (2 * step(xs)) * (f(U_L) - f(U_R))
@@ -273,6 +273,31 @@ function step_lax_friedrichs!(U_next, U, Δt, xs::AbstractRange, cfg)
     U_next[end] = U_next[end-1]
     # in-place!
     return nothing
+end
+
+function _step_lax_friedrichs_threaded_impl!(U_next, U, Δt, xs::AbstractRange, cfg)
+    f = nonlinear_f(cfg)
+    tmap!(
+        (U_L, U_R) -> let f = f, Δt = Δt, xs = xs
+            (U_L + U_R) / 2 + Δt / (2 * step(xs)) * (f(U_L) - f(U_R))
+        end,
+        @view(U_next[begin+1:end-1]),
+        @view(U[begin:end-2]),
+        @view(U[begin+2:end]),
+    )
+    # apply extrapolation
+    U_next[begin] = U_next[begin+1]
+    U_next[end] = U_next[end-1]
+    # in-place!
+    return nothing
+end
+
+function step_lax_friedrichs!(U_next, U, Δt, xs, cfg; threading_thold = 10_000)
+    if length(xs) > threading_thold
+        return _step_lax_friedrichs_serial_impl!(U_next, U, Δt, xs, cfg)
+    else
+        return _step_lax_friedrichs_threaded_impl!(U_next, U, Δt, xs, cfg)
+    end
 end
 
 function next_shock_location(Ξ, U, xs, Δt, cfg)
