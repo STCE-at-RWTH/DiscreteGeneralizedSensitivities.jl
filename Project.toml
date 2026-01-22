@@ -1,6 +1,6 @@
 name = "DiscreteGeneralizedSensitivities"
 uuid = "eb9eecac-26dc-45b7-83f2-1d878d2a5a88"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Sasha Fleming <fleming@stce.rwth-aachen.de> and contributors"]
 
 [deps]
@@ -17,5 +17,12 @@ ForwardDiff = "1.3.0"
 LoopVectorization = "0.12.173"
 SimpleIntegration = "0.1.3"
 StaticArrays = "1.9.16"
+Test = "1.11.0"
 Tullio = "0.3.8"
 julia = "1.11"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
