@@ -9,12 +9,14 @@ end DiscreteGeneralizedSensitivities
 using Base: Fix1, Fix2, Fix
 
 using DifferentiationInterface
-using ForwardDiff: ForwardDiff
+using ForwardDiff: ForwardDiff, Dual, value, partials
 using LoopVectorization
+using OhMyThreads
 using StaticArrays
+using StaticArrays: sacollect
 using Tullio
 
-export DiscreteSensitivityProblemCfg, DiscreteSensitivityBurgers
+export DiscreteSensitivityProblemCfg
 export get_initial_conditions
 export cfl_safety_factor, cs_scaling_factor, cr_scaling_factor, alpha
 export nonlinear_f, nonlinear_df, u_exact, u_broad, u_gen
@@ -25,37 +27,36 @@ export solve_pde!, solve_pde_and_estimate_Cr!, compute_Cr, compute_Cs, compute_C
 
 const fdiff_backend = AutoForwardDiff()
 
+# Characteristic function of an interval [a, b]
+X(x, a, b) = a ≤ x ≤ b
+X(x, ival) = X(x, ival...)
+
+function piecewise_constant_interp(data, xs::AbstractRange)
+    # I am too lazy to write a functor. closure time.
+    return (x,) -> let data = data, xs = xs
+        x <= first(xs) && return first(data)
+        x >= last(xs) && return last(data)
+        offset = round(Int, (x - first(xs)) / step(xs))
+        return data[begin+offset]
+    end
+end
+
 """
-    Fixed_t_x{F, T, X}
-    Fixed_t_p(f::F, t::T, x::X)
+    fixed_t_x(f, t, x)
 
 Fix some callable with signature `f(t, x, p)` at a specific `t` and `x`. 
 """
-struct Fixed_t_x{F,T,X}
-    fn::F
-    t::T
-    x::X
-end
-
-function (fix_tx::Fixed_t_x{F,T,X})(p) where {F,T,X}
-    return fix_tx.fn(fix_tx.t, fix_tx.x, p)
-end
+fixed_t_x(f, t, x) = Fix1(Fix1(f, t), x)
 
 """
-    Fixed_t_p{F, T, P}
-    Fixed_t_p(f::F, t::T, p::P)
+    fixed_t_p(f, t, p)
 
 Fix some callable with signature `f(t, x, p)` at a specific `t` and `p`. 
 """
-struct Fixed_t_p{F,T,P}
-    fn::F
-    t::T
-    p::P
-end
 
-function (fix_tp::Fixed_t_p{F,T,P})(x) where {F,T,P}
-    return fix_tp.fn(fix_tp.t, x, fix_tp.p)
-end
+fixed_t_p(f, t, p) = Fix2(Fix1(f, t), p)
+
+include("time_stepping.jl")
 
 abstract type DiscreteSensitivityProblemCfg{T} end
 
@@ -143,7 +144,11 @@ Get the size(s) of the discontinuities in the exact solution.
 """
 function jump_size end
 
-include("problem_configs.jl")
+include("problem_configurations/burgers.jl")
+
+using .Burgers: DiscreteSensitivityBurgers
+
+export DiscreteSensitivityBurgers
 
 """
     u_gen(cfg::::DiscreteSensitivityProblemCfg)
@@ -241,7 +246,7 @@ compute_Cs(U, cfg) = cs_scaling_factor(cfg) * compute_Ct(U, cfg)
 compute_Cs(u, xs, cfg) = cs_scaling_factor(cfg) * compute_Ct(u, xs, cfg)
 
 function compute_Cr(U, t, xs, p, cfg)
-    u_ex_fix = Fixed_t_p(u_exact(cfg), t, p)
+    u_ex_fix = fixed_t_p(u_exact(cfg), t, p)
     A1 = maximum((abs ∘ nonlinear_df(cfg) ∘ u_ex_fix), xs)
     A2 = 2 + maximum((abs ∘ nonlinear_df(cfg)), U)
     return cr_scaling_factor(cfg) * (max(A1, A2) + 1) * compute_Cs(U, cfg)
@@ -251,61 +256,6 @@ function fdiff_eps(arg::T) where {T<:Real}
     cbrt_eps = cbrt(eps(T))
     h = 2^(round(log2((1 + abs(arg)) * cbrt_eps)))
     return h
-end
-
-function _step_lax_friedrichs_serial_impl!(U_next, U, Δt, xs::AbstractRange, cfg)
-    f = nonlinear_f(cfg)
-    C = Δt / (2 * step(xs))
-    @tullio U_next[i] = (U[i-1] + U[i+1]) / 2 + C * f(U[i-1]) - f(U[i+1])
-    # apply extrapolation
-    U_next[begin] = U_next[begin+1]
-    U_next[end] = U_next[end-1]
-    # in-place!
-    return nothing
-end
-
-function step_lax_friedrichs!(U_next, U, Δt, xs, cfg)
-    return _step_lax_friedrichs_serial_impl!(U_next, U, Δt, xs, cfg)
-end
-
-function next_shock_location(Ξ, U, xs, Δt, cfg)
-    U_shock = piecewise_constant_interp(U, xs)(Ξ)
-    return Ξ + Δt * nonlinear_df(cfg)(U_shock)
-end
-
-function next_shock_sensitivity(Ξ, Ξdot, U, Udot, xs, Δt, Cr, cfg)
-    dx = step(xs)
-    ΞL = Ξ - Cr * dx^alpha(cfg)
-    ΞR = Ξ + Cr * dx^alpha(cfg)
-    @assert(ΞL < ΞR)
-    @assert(Δt > 0)
-
-    U_const = piecewise_constant_interp(U, xs)
-    Udot_const = piecewise_constant_interp(Udot, xs)
-
-    UL = U_const(ΞL)
-    UL_far = U_const(ΞL - 2 * dx)
-    UR = U_const(ΞR)
-    UR_far = U_const(ΞR + 2 * dx)
-    ΔU_shock = UL - UR
-
-    dUdx_L = (UL - UL_far) / (2 * dx)
-    dUdx_R = (UR_far - UR) / (2 * dx)
-
-    UdotL = Udot_const(ΞL)
-    UdotR = Udot_const(ΞR)
-
-    fL = nonlinear_f(cfg)(UL)
-    fR = nonlinear_f(cfg)(UR)
-    dfL = nonlinear_df(cfg)(UL)
-    dfR = nonlinear_df(cfg)(UR)
-
-    A_L = (dfL * (dUdx_L * Ξdot + UdotL)) / ΔU_shock
-    A_R = (dfR * (dUdx_R * Ξdot + UdotR)) / ΔU_shock
-    B = (fL - fR) / (ΔU_shock^2)
-    C_L = (dUdx_L * Ξdot + UdotL)
-    C_R = (dUdx_R * Ξdot + UdotR)
-    return Ξdot + Δt * (A_L - A_R - B * (C_L - C_R))
 end
 
 function solve_pde!(U, xs::AbstractRange, T_end, cfg; recompute_dt = false)
@@ -462,20 +412,6 @@ function solve_pde!(
         Udot .= Udot_temp
     end
     return (U, Udot, Ξ, Ξdot)
-end
-
-# Characteristic function of an interval [a, b]
-X(x, a, b) = a ≤ x ≤ b
-X(x, ival) = X(x, ival...)
-
-function piecewise_constant_interp(data, xs::AbstractRange)
-    # I am too lazy to write a functor. closure time.
-    return (x,) -> let data = data, xs = xs
-        x <= first(xs) && return first(data)
-        x >= last(xs) && return last(data)
-        offset = round(Int, (x - first(xs)) / step(xs))
-        return data[begin+offset]
-    end
 end
 
 end
