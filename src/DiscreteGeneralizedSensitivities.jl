@@ -24,6 +24,7 @@ export ξ, dξ_dp, jump_size
 
 export GTVClosure
 export solve_pde!, solve_pde_and_estimate_Cr!, compute_Cr, compute_Cs, compute_Ct
+export solve_pde_weno!
 
 const fdiff_backend = AutoForwardDiff()
 
