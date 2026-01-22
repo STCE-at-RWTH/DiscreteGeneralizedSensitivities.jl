@@ -11,7 +11,6 @@ using Base: Fix1, Fix2, Fix
 using DifferentiationInterface
 using ForwardDiff: ForwardDiff, Dual, value, partials
 using LoopVectorization
-using OhMyThreads
 using StaticArrays
 using StaticArrays: sacollect
 using Tullio
