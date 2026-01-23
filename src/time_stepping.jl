@@ -16,9 +16,13 @@ function step_lax_friedrichs!(U_next, U, Δt, xs, cfg)
     return nothing
 end
 
-function dΞ_dt_appx(Ξ, U, xs, Cr, cfg)
+function dΞ_dt_appx(Ξ, U, xs, Cr_dummy, cfg)
     U_shock = piecewise_constant_interp(U, xs)(Ξ)
     return nonlinear_df(cfg)(U_shock)
+end
+
+function dΞ_dt_appx(Ξ, U, xs, cfg::DiscreteSensitivityProblemCfg)
+    return dΞ_dt_appx(Ξ, U, xs, 0.0, cfg)
 end
 
 function dΞ_dt_appx(Ξ_dual::Dual{T}, U_dual, xs, Cr, cfg) where {T}
@@ -58,8 +62,8 @@ function dΞ_dt_appx(Ξ_dual::Dual{T}, U_dual, xs, Cr, cfg) where {T}
     return Dual{T}(dΞ, dΞdot)
 end
 
-function next_shock_location(Ξ, U, xs, Δt, Cr, cfg)
-    return Ξ + Δt * dΞ_dt_appx(Ξ, U, xs, Cr, cfg)
+function next_shock_location(Ξ, U, xs, Δt, cfg)
+    return Ξ + Δt * dΞ_dt_appx(Ξ, U, xs, cfg)
 end
 
 function next_shock_sensitivity(Ξ, Ξdot, U, Udot, xs, Δt, Cr, cfg)
@@ -176,17 +180,14 @@ end
 
 function _estimate_f_neg(F, j, order::Val{R}; ε = 1.0e-6, p = 2) where {R} end
 
+# let @tullio handle AVX and threading
 function _weno_estimate_L_f_pos!(L, F, U, Δt, Δx, order::Val{R}, cfg) where {R}
     f = nonlinear_f(cfg)
-    tforeach(axes(F, 1)[begin:end-1]) do j
-        F[j] = 0.5 * (f(U[j]) + f(U[j+1])) - 0.5 * (Δx / Δt) * (U[j+1] - U[j])
-    end
+    @tullio F[j] = 0.5 * (f(U[j]) + f(U[j+1])) - 0.5 * (Δx / Δt) * (U[j+1] - U[j])
     # L = -inv(Δx)(f_hat_{j+1/2} - f_hat_{j-1/2})
-
-    tforeach(axes(L, 1)[begin+R:end-R]) do j
-        L[j] = -inv(Δx) * (_estimate_f_pos(F, j, order) - _estimate_f_pos(F, j - 1, order))
-    end
-
+    @tullio L[j+0] = begin
+        -inv(Δx) * (_estimate_f_pos(F, j, order) - _estimate_f_pos(F, j - 1, order))
+    end (j ∈ axes(L, 1)[begin+R:end-R])
     return L
 end
 

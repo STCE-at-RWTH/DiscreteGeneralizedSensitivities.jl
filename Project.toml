@@ -1,6 +1,6 @@
 name = "DiscreteGeneralizedSensitivities"
 uuid = "eb9eecac-26dc-45b7-83f2-1d878d2a5a88"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["Sasha Fleming <fleming@stce.rwth-aachen.de> and contributors"]
 
 [deps]
