@@ -56,9 +56,9 @@ Fix some callable with signature `f(t, x, p)` at a specific `t` and `p`.
 
 fixed_t_p(f, t, p) = Fix2(Fix1(f, t), p)
 
-include("time_stepping.jl")
-
 abstract type DiscreteSensitivityProblemCfg{T} end
+
+include("time_stepping.jl")
 
 """
     cfl_safety_factor(::DiscreteSensitivityProblemCfg)
